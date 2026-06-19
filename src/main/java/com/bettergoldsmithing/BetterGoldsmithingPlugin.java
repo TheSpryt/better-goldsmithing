@@ -21,15 +21,18 @@ import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.MenuEntryAdded;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.StatChanged;
+import net.runelite.api.events.VarbitChanged;
 import net.runelite.api.gameval.InventoryID;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.ObjectID;
+import net.runelite.api.gameval.VarbitID;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.ItemStats;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.util.ColorUtil;
 import net.runelite.client.util.Text;
 
@@ -65,11 +68,24 @@ public class BetterGoldsmithingPlugin extends Plugin
 	@Inject
 	private BetterGoldsmithingConfig config;
 
+	@Inject
+	private OverlayManager overlayManager;
+
+	@Inject
+	private GloveLockOverlay gloveLockOverlay;
+
 	// True while we are protecting the glove slot, i.e. between depositing gold
-	// ore with gauntlets on and the resulting Smithing XP being credited.
+	// ore with gauntlets on and the whole batch finishing smelting (all the
+	// Smithing XP credited). At the Blast Furnace the XP is granted as the bars
+	// smelt, which the BLAST_FURNACE_GOLD_ORE varbit tracks (it counts down to 0
+	// as the deposited ore is converted), so we hold the lock until it hits 0.
 	private boolean glovesLocked;
-	private int smithingXpAtDeposit;
+	private int lastSmithingXp;
 	private int lockTicksRemaining;
+	// True once the deposited ore has actually shown up in the furnace, so a
+	// momentary 0 right after depositing (ore still on the belt) can't release
+	// the lock early.
+	private boolean oreEnteredFurnace;
 
 	// Set when a deposit is clicked with the gauntlets on; the lock only arms
 	// once the gold ore has actually left the inventory (the deposit completes).
@@ -79,11 +95,13 @@ public class BetterGoldsmithingPlugin extends Plugin
 	protected void startUp()
 	{
 		clearLock();
+		overlayManager.add(gloveLockOverlay);
 	}
 
 	@Override
 	protected void shutDown()
 	{
+		overlayManager.remove(gloveLockOverlay);
 		clearLock();
 	}
 
@@ -229,7 +247,7 @@ public class BetterGoldsmithingPlugin extends Plugin
 		}
 
 		event.consume();
-		warn("Gloves are locked until the Smithing XP for your deposited gold lands.");
+		warn("Gloves are locked until your deposited gold finishes smelting.");
 	}
 
 	@Subscribe
@@ -240,11 +258,38 @@ public class BetterGoldsmithingPlugin extends Plugin
 			return;
 		}
 
-		// The bonus XP for the deposited gold has been credited with the
-		// gauntlets still on — the swap window is now safe.
-		if (event.getXp() > smithingXpAtDeposit)
+		// A Smithing XP gain means a bar just smelted, i.e. the batch is still
+		// being worked. Don't release here (more bars may still be smelting);
+		// just treat it as progress and push back the safety timeout.
+		if (event.getXp() > lastSmithingXp)
 		{
-			releaseLock("smithing XP landed");
+			lastSmithingXp = event.getXp();
+			lockTicksRemaining = config.maxLockTicks();
+		}
+	}
+
+	@Subscribe
+	public void onVarbitChanged(VarbitChanged event)
+	{
+		if (!glovesLocked || event.getVarbitId() != VarbitID.BLAST_FURNACE_GOLD_ORE)
+		{
+			return;
+		}
+
+		if (event.getValue() > 0)
+		{
+			// Deposited ore is in the furnace and smelting; keep holding.
+			oreEnteredFurnace = true;
+			lockTicksRemaining = config.maxLockTicks();
+			return;
+		}
+
+		// Gold ore in the furnace has reached 0: the whole batch has finished
+		// smelting, so all of its bonus XP has now been credited with the
+		// gauntlets on. Safe to release.
+		if (oreEnteredFurnace)
+		{
+			releaseLock("gold batch finished smelting");
 		}
 	}
 
@@ -258,7 +303,7 @@ public class BetterGoldsmithingPlugin extends Plugin
 
 		if (--lockTicksRemaining <= 0)
 		{
-			releaseLock("safety timeout reached without an XP drop");
+			releaseLock("safety timeout reached without smelting progress");
 		}
 	}
 
@@ -277,8 +322,11 @@ public class BetterGoldsmithingPlugin extends Plugin
 	private void armLock()
 	{
 		glovesLocked = true;
-		smithingXpAtDeposit = client.getSkillExperience(Skill.SMITHING);
+		lastSmithingXp = client.getSkillExperience(Skill.SMITHING);
 		lockTicksRemaining = config.maxLockTicks();
+		// If the ore already registered in the furnace this same tick, note it so
+		// the lock can release once it smelts back down to 0.
+		oreEnteredFurnace = client.getVarbitValue(VarbitID.BLAST_FURNACE_GOLD_ORE) > 0;
 	}
 
 	private void releaseLock(String reason)
@@ -291,8 +339,9 @@ public class BetterGoldsmithingPlugin extends Plugin
 	private void clearLock()
 	{
 		glovesLocked = false;
-		smithingXpAtDeposit = 0;
+		lastSmithingXp = 0;
 		lockTicksRemaining = 0;
+		oreEnteredFurnace = false;
 		pendingDeposit = false;
 	}
 
@@ -330,10 +379,16 @@ public class BetterGoldsmithingPlugin extends Plugin
 		return gloves != null && gloves.getId() == ItemID.GAUNTLETS_OF_GOLDSMITHING;
 	}
 
+	// True while the glove slot is being protected; read by GloveLockOverlay.
+	boolean isGloveLockActive()
+	{
+		return glovesLocked;
+	}
+
 	// Returns true for any item worn in the glove slot, determined from the
 	// client's item database rather than a fixed list — so new gloves are
 	// covered automatically.
-	private boolean isGloveSlotItem(int itemId)
+	boolean isGloveSlotItem(int itemId)
 	{
 		final ItemStats stats = itemManager.getItemStats(itemId);
 		return stats != null

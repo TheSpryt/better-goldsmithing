@@ -23,8 +23,8 @@ public interface BetterGoldsmithingConfig extends Config
 
 	@ConfigItem(
 		keyName = "lockGloves",
-		name = "Lock gloves until XP lands",
-		description = "After depositing gold ore with gauntlets on, block equipping/removing gloves until the Smithing XP for that deposit is credited.",
+		name = "Lock gloves until smelted",
+		description = "After depositing gold ore with gauntlets on, block equipping/removing gloves until the whole batch has finished smelting (all of its bonus XP credited).",
 		position = 2
 	)
 	default boolean lockGloves()
@@ -33,10 +33,21 @@ public interface BetterGoldsmithingConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "showLockIcon",
+		name = "Show lock icon on gloves",
+		description = "While the glove slot is locked, draw a small 🚫 mark on any gloves in your inventory so the lock is obvious at a glance.",
+		position = 3
+	)
+	default boolean showLockIcon()
+	{
+		return true;
+	}
+
+	@ConfigItem(
 		keyName = "hideEmptyDispenser",
 		name = "Hide empty dispenser option",
 		description = "Remove the bar dispenser's left-click option while it's empty (shows \"Check\" instead of \"Take\"), so you can't waste a click collecting nothing.",
-		position = 3
+		position = 4
 	)
 	default boolean hideEmptyDispenser()
 	{
@@ -47,7 +58,7 @@ public interface BetterGoldsmithingConfig extends Config
 		keyName = "showChatMessages",
 		name = "Show chat warnings",
 		description = "Print a game message when a deposit or glove swap is blocked.",
-		position = 4
+		position = 5
 	)
 	default boolean showChatMessages()
 	{
@@ -58,8 +69,8 @@ public interface BetterGoldsmithingConfig extends Config
 	@ConfigItem(
 		keyName = "maxLockTicks",
 		name = "Safety auto-unlock (ticks)",
-		description = "Automatically release the glove lock after this many game ticks if no Smithing XP arrives, so you can never get stuck. 0 disables the safety net (lock only releases on XP).",
-		position = 5
+		description = "Release the glove lock if there is no smelting progress for this many game ticks, so you can never get stuck (the timer resets while bars are still smelting). 0 disables the safety net.",
+		position = 6
 	)
 	default int maxLockTicks()
 	{
