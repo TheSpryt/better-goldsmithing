@@ -351,7 +351,7 @@ public class BetterGoldsmithingPlugin extends Plugin
 		client.addChatMessage(
 			ChatMessageType.GAMEMESSAGE,
 			"",
-			ColorUtil.wrapWithColorTag("[Goldsmith Lock] " + message, Color.RED),
+			ColorUtil.wrapWithColorTag("[Better Goldsmithing] " + message, Color.RED),
 			null);
 	}
 
