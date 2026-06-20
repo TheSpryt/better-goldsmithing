@@ -9,12 +9,15 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.EquipmentInventorySlot;
+import net.runelite.api.GameObject;
 import net.runelite.api.GameState;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.Skill;
+import net.runelite.api.events.GameObjectDespawned;
+import net.runelite.api.events.GameObjectSpawned;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.ItemContainerChanged;
@@ -22,10 +25,12 @@ import net.runelite.api.events.MenuEntryAdded;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.StatChanged;
 import net.runelite.api.events.VarbitChanged;
+import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.InventoryID;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.ObjectID;
 import net.runelite.api.gameval.VarbitID;
+import net.runelite.api.widgets.Widget;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.game.ItemManager;
@@ -87,9 +92,13 @@ public class BetterGoldsmithingPlugin extends Plugin
 	// the lock early.
 	private boolean oreEnteredFurnace;
 
-	// Set when a deposit is clicked with the gauntlets on; the lock only arms
-	// once the gold ore has actually left the inventory (the deposit completes).
-	private boolean pendingDeposit;
+	// True while the Blast Furnace conveyor is loaded in the scene (i.e. we're at
+	// the furnace). Lets a gold deposit be told apart from gold ore leaving the
+	// inventory anywhere else. Tracked via game object (de)spawn.
+	private boolean conveyorInScene;
+	// Whether the inventory held gold ore at the previous change, so we can detect
+	// the present -> gone transition that means a deposit just completed.
+	private boolean prevInvHadGoldOre;
 
 	// Mirrors the furnace's gold-ore count so a rise (a deposit) can arm the lock
 	// even if the deposit click was missed. -1 means "not yet observed".
@@ -196,29 +205,61 @@ public class BetterGoldsmithingPlugin extends Plugin
 			return;
 		}
 
-		// Gauntlets are on. Don't lock yet — we may still be walking to the belt.
-		// Just flag the intent; the lock arms in onItemContainerChanged once the
-		// gold ore actually leaves the inventory.
-		if (config.lockGloves())
-		{
-			pendingDeposit = true;
-		}
+		// Gauntlets are on, so nothing to block here. The lock arms in
+		// onItemContainerChanged the instant the gold ore leaves the inventory.
 	}
 
 	@Subscribe
 	public void onItemContainerChanged(ItemContainerChanged event)
 	{
-		if (!pendingDeposit || event.getContainerId() != InventoryID.INV)
+		if (event.getContainerId() != InventoryID.INV)
 		{
 			return;
 		}
 
-		// The conveyor empties every ore at once, so the deposit is done the
-		// moment the gold ore is gone from the inventory — now it's safe to lock.
-		if (!containerHasGoldOre(event.getItemContainer()))
+		final boolean hasGold = containerHasGoldOre(event.getItemContainer());
+		final boolean justEmptied = prevInvHadGoldOre && !hasGold;
+		prevInvHadGoldOre = hasGold;
+
+		// Gold ore went from present to gone while we're at the furnace with the
+		// gauntlets on: a deposit just completed. Arm immediately, the instant the
+		// inventory empties, independent of whether the deposit click was caught.
+		// That click handoff is occasionally missed, which used to leave the lock
+		// waiting on the belt-delayed varbit fallback (the lag you saw).
+		// The bank check excludes banking gold ore (also empties it, but with the
+		// bank open) from being mistaken for a conveyor deposit.
+		if (!glovesLocked && justEmptied && config.lockGloves()
+			&& conveyorInScene && goldsmithGauntletsEquipped() && !bankOpen())
 		{
-			pendingDeposit = false;
-			armLock();
+			armLock("inventory emptied");
+		}
+	}
+
+	// A conveyor deposit happens with the bank closed; depositing gold ore into
+	// the bank happens with it open. Used to tell the two apart.
+	private boolean bankOpen()
+	{
+		final Widget bank = client.getWidget(InterfaceID.Bankmain.ITEMS_CONTAINER);
+		return bank != null && !bank.isHidden();
+	}
+
+	@Subscribe
+	public void onGameObjectSpawned(GameObjectSpawned event)
+	{
+		final GameObject go = event.getGameObject();
+		if (go.getId() == ObjectID.BLAST_FURNACE_CONVEYER_BELT_CLICKABLE)
+		{
+			conveyorInScene = true;
+		}
+	}
+
+	@Subscribe
+	public void onGameObjectDespawned(GameObjectDespawned event)
+	{
+		final GameObject go = event.getGameObject();
+		if (go.getId() == ObjectID.BLAST_FURNACE_CONVEYER_BELT_CLICKABLE)
+		{
+			conveyorInScene = false;
 		}
 	}
 
@@ -310,7 +351,7 @@ public class BetterGoldsmithingPlugin extends Plugin
 		if (previous >= 0 && value > previous
 			&& config.lockGloves() && goldsmithGauntletsEquipped())
 		{
-			armLock();
+			armLock("furnace varbit fallback");
 		}
 	}
 
@@ -337,13 +378,15 @@ public class BetterGoldsmithingPlugin extends Plugin
 			|| state == GameState.CONNECTION_LOST)
 		{
 			clearLock();
-			// Re-baseline the furnace tracker so a stale value from before the
-			// world change can't look like a fresh deposit after logging in.
+			// Re-baseline the trackers so stale values from before the world
+			// change can't look like a fresh deposit after logging in.
 			lastFurnaceGoldOre = -1;
+			conveyorInScene = false;
+			prevInvHadGoldOre = false;
 		}
 	}
 
-	private void armLock()
+	private void armLock(String via)
 	{
 		glovesLocked = true;
 		lastSmithingXp = client.getSkillExperience(Skill.SMITHING);
@@ -351,6 +394,7 @@ public class BetterGoldsmithingPlugin extends Plugin
 		// If the ore already registered in the furnace this same tick, note it so
 		// the lock can release once it smelts back down to 0.
 		oreEnteredFurnace = client.getVarbitValue(VarbitID.BLAST_FURNACE_GOLD_ORE) > 0;
+		log.debug("Glove lock armed via {}", via);
 	}
 
 	private void releaseLock(String reason)
@@ -366,7 +410,6 @@ public class BetterGoldsmithingPlugin extends Plugin
 		lastSmithingXp = 0;
 		lockTicksRemaining = 0;
 		oreEnteredFurnace = false;
-		pendingDeposit = false;
 	}
 
 	private boolean inventoryHasGoldOre()
