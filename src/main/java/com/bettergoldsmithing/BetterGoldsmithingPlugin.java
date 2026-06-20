@@ -91,6 +91,10 @@ public class BetterGoldsmithingPlugin extends Plugin
 	// once the gold ore has actually left the inventory (the deposit completes).
 	private boolean pendingDeposit;
 
+	// Mirrors the furnace's gold-ore count so a rise (a deposit) can arm the lock
+	// even if the deposit click was missed. -1 means "not yet observed".
+	private int lastFurnaceGoldOre = -1;
+
 	@Override
 	protected void startUp()
 	{
@@ -271,25 +275,42 @@ public class BetterGoldsmithingPlugin extends Plugin
 	@Subscribe
 	public void onVarbitChanged(VarbitChanged event)
 	{
-		if (!glovesLocked || event.getVarbitId() != VarbitID.BLAST_FURNACE_GOLD_ORE)
+		if (event.getVarbitId() != VarbitID.BLAST_FURNACE_GOLD_ORE)
 		{
 			return;
 		}
 
-		if (event.getValue() > 0)
+		final int value = event.getValue();
+		final int previous = lastFurnaceGoldOre;
+		lastFurnaceGoldOre = value;
+
+		if (glovesLocked)
 		{
-			// Deposited ore is in the furnace and smelting; keep holding.
-			oreEnteredFurnace = true;
-			lockTicksRemaining = config.maxLockTicks();
+			if (value > 0)
+			{
+				// Deposited ore is in the furnace and smelting; keep holding.
+				oreEnteredFurnace = true;
+				lockTicksRemaining = config.maxLockTicks();
+			}
+			else if (oreEnteredFurnace)
+			{
+				// Gold ore in the furnace has reached 0: the whole batch has
+				// finished smelting, so all of its bonus XP has now been credited
+				// with the gauntlets on. Safe to release.
+				releaseLock("gold batch finished smelting");
+			}
 			return;
 		}
 
-		// Gold ore in the furnace has reached 0: the whole batch has finished
-		// smelting, so all of its bonus XP has now been credited with the
-		// gauntlets on. Safe to release.
-		if (oreEnteredFurnace)
+		// Not locked: a rise in the furnace's gold ore means a deposit just
+		// landed. Arm here as a focus-independent fallback, in case the deposit
+		// click was never seen (the menu/click path can be missed, e.g. around
+		// window focus changes). previous >= 0 skips the first observation so a
+		// stale value can't look like a deposit.
+		if (previous >= 0 && value > previous
+			&& config.lockGloves() && goldsmithGauntletsEquipped())
 		{
-			releaseLock("gold batch finished smelting");
+			armLock();
 		}
 	}
 
@@ -316,6 +337,9 @@ public class BetterGoldsmithingPlugin extends Plugin
 			|| state == GameState.CONNECTION_LOST)
 		{
 			clearLock();
+			// Re-baseline the furnace tracker so a stale value from before the
+			// world change can't look like a fresh deposit after logging in.
+			lastFurnaceGoldOre = -1;
 		}
 	}
 
