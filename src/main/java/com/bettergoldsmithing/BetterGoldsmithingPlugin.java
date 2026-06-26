@@ -400,7 +400,7 @@ public class BetterGoldsmithingPlugin extends Plugin
 	private void releaseLock(String reason)
 	{
 		clearLock();
-		// Diagnostic only — releasing the lock is expected and must not spam chat.
+		// Diagnostic only - releasing the lock is expected and must not spam chat.
 		log.debug("Glove lock released: {}", reason);
 	}
 
@@ -453,7 +453,7 @@ public class BetterGoldsmithingPlugin extends Plugin
 	}
 
 	// Returns true for any item worn in the glove slot, determined from the
-	// client's item database rather than a fixed list — so new gloves are
+	// client's item database rather than a fixed list - so new gloves are
 	// covered automatically.
 	boolean isGloveSlotItem(int itemId)
 	{
