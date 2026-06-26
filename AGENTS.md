@@ -4,6 +4,7 @@
 
 - **Never reference Claude, Anthropic, or any AI assistant anywhere** - not in commit messages, pull request or issue text, code comments, release notes, changelog entries, or documentation. Do **not** add `Co-Authored-By:` trailers or "Generated with ..." attribution lines that name an AI. All commits, PRs and releases are authored solely as the project/user.
 - **Never use the em dash character (Unicode U+2014).** Always use a standard hyphen (`-`) instead, everywhere: code, comments, commit messages, PR/issue text, docs and changelogs.
+- **Commits must be authored (and committed) as `TheSpryt <28929573+TheSpryt@users.noreply.github.com>`** - set both the author and committer name/email. The GitHub `users.noreply.github.com` address is required, or pushes are rejected by email-privacy protection.
 
 ## Logging
 
